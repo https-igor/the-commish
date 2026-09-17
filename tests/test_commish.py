@@ -34,6 +34,12 @@ DB = {
     "6": player("Geno Smith", "QB", "NYJ"),
     "7": player("Brashard Smith", "RB", "KC"),
     "8": player("Ito Smith", "RB", None, active=False),
+    "9": player("Micah Simon", "WR", "CAR"),
+    "10": player("E.J. Warner", "QB", None),
+    "11": player("Amon-Ra St. Brown", "WR", "DET"),
+    "12": player("Jonathan Taylor", "RB", "IND"),
+    "13": player("Mason Taylor", "TE", "NYJ"),
+    "PHI": player("Philadelphia Eagles", "DEF", "PHI"),
     "BUF": player("Buffalo Bills", "DEF", "BUF"),
 }
 
@@ -64,6 +70,24 @@ class TestNames(unittest.TestCase):
         self.assertIsNone(pid)
         self.assertEqual(alternatives, [])
         self.assertEqual(commish.find_player("Ito Smith", DB)[0], "8")
+
+    def test_a_similar_first_name_is_not_a_match(self):
+        """difflib rates 'Micah Parsons' close to 'Micah Simon'; starting Simon loses a week."""
+        pid, alternatives = commish.find_player("Micah Parsons", DB)
+        self.assertIsNone(pid)
+        self.assertTrue(any("Micah Simon" in a for a in alternatives))
+
+    def test_a_defensive_player_never_lands_on_a_teamless_lookalike(self):
+        self.assertIsNone(commish.find_player("Fred Warner", DB)[0])
+
+    def test_two_real_players_share_a_surname_so_it_asks(self):
+        pid, alternatives = commish.find_player("Jon Taylor", DB)
+        self.assertIsNone(pid)
+        self.assertTrue(any("Jonathan Taylor" in a for a in alternatives))
+
+    def test_partial_name_everyone_types(self):
+        self.assertEqual(commish.find_player("St Brown", DB)[0], "11")
+        self.assertEqual(commish.find_player("Amon Ra", DB)[0], "11")
 
     def test_team_defense_by_abbreviation(self):
         self.assertEqual(commish.find_player("BUF", DB)[0], "BUF")
@@ -123,6 +147,20 @@ class TestDefenseRanks(unittest.TestCase):
 
     def test_matchup_note_is_empty_without_data(self):
         self.assertEqual(commish.matchup_note("1", DB, {"1": {"opp": "SEA"}}, {}), "")
+
+
+class TestInjuryNames(unittest.TestCase):
+    """ESPN's feed carries defenders too, and today it holds two Justin Jeffersons."""
+
+    def test_the_designation_follows_the_position(self):
+        feed = {
+            (commish.norm("Justin Jefferson"), "LB"): {"status": "Out", "comment": "linebacker"},
+            (commish.norm("Justin Jefferson"), "WR"): {"status": "Active", "comment": "receiver"},
+            commish.norm("Stefon Diggs"): {"status": "Active", "comment": "only one of him"},
+        }
+        db = {"j": player("Justin Jefferson", "WR", "MIN"), "1": DB["1"]}
+        self.assertEqual(commish.injury_note("j", db, feed)["comment"], "receiver")
+        self.assertEqual(commish.injury_note("1", db, feed)["comment"], "only one of him")
 
 
 class TestLockIssues(unittest.TestCase):
@@ -193,6 +231,22 @@ class TestLockIssues(unittest.TestCase):
         swaps = [row.split("|")[3] for row in rows]
         self.assertIn("Stefon Diggs", swaps[0])
         self.assertIn("no healthy", swaps[1])
+
+    def test_an_untracked_position_is_not_an_empty_slot(self):
+        """An IDP starter is invisible to this index: silence, not a weekly false alarm."""
+        self.bundle["mine"]["starters"] = ["99999", "5", "3"]
+        self.bundle["mine"]["players"] = ["99999", "5", "3", "1", "4"]
+        self.assertFalse(any("EMPTY SLOT" in row for row in commish.lock_issues({}, hours=3)))
+
+    def test_the_deadline_is_the_earlier_of_the_two_kickoffs(self):
+        """Swapping a 4:05pm starter for a 1:00pm bench player has to happen by 1:00pm."""
+        self.bundle["league"]["roster_positions"] = ["RB", "WR", "FLEX", "BN", "BN"]
+        self.bundle["mine"] = {"roster_id": 1, "starters": ["5", "1", "3"],
+                               "players": ["5", "1", "3", "4"], "reserve": []}
+        rows = commish.lock_issues({}, hours=5)
+        harvey = [r for r in rows if "Harvey" in r][0]
+        self.assertIn("Parker Washington", harvey)
+        self.assertIn("locks 2026-09-20T17:00Z", harvey)   # JAX kickoff, not DEN's 20:05
 
     def test_empty_slot_is_flagged(self):
         self.bundle["mine"]["starters"] = ["0", "5", "3"]

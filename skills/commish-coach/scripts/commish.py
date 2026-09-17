@@ -197,19 +197,38 @@ def trending(kind: str = "add") -> dict:
 
 
 def espn_injuries() -> dict:
-    """normalized player name -> {'status','comment'} from ESPN's league-wide report."""
+    """(normalized name, position) -> {'status','comment'}, plus a name-only entry when unambiguous.
+
+    Keyed by position because the feed carries defenders too: today it holds an
+    LB and a WR both called Justin Jefferson, and a name-only map would put the
+    linebacker's designation next to a WR1 and bench him.
+    """
     try:
         data = cached("espn_injuries.json", ESPN_INJURIES, 1800) or {}
     except SystemExit:
         return {}  # the ESPN notes are a bonus; Sleeper's designation still shows
-    out = {}
+    out, seen = {}, {}
     for team in data.get("injuries", []):
         for inj in team.get("injuries", []):
             ath = inj.get("athlete") or {}
             name = ath.get("displayName") or ""
-            if name:
-                out[norm(name)] = {"status": inj.get("status"), "comment": inj.get("shortComment") or ""}
+            if not name:
+                continue
+            pos = ((ath.get("position") or {}).get("abbreviation") or "").upper()
+            entry = {"status": inj.get("status"), "comment": inj.get("shortComment") or ""}
+            out[(norm(name), pos)] = entry
+            seen.setdefault(norm(name), []).append(entry)
+    for name, entries in seen.items():
+        if len(entries) == 1:
+            out[norm(name)] = entries[0]
     return out
+
+
+def injury_note(pid: str, db: dict, inj: dict) -> dict | None:
+    """This player's ESPN entry: by name AND his own position, never by name alone when ambiguous."""
+    p = db.get(pid) or {}
+    key = norm(p.get("name", ""))
+    return inj.get((key, (p.get("pos") or "").upper())) or inj.get(key)
 
 
 def ordinal(n: int) -> str:
@@ -333,11 +352,43 @@ def find_player(query: str, db: dict, prefer: set | None = None) -> tuple[str | 
         if len(hits) == 1:
             return hits[0], []
         return None, [f"{db[pid]['name']} ({db[pid]['pos']}, {db[pid]['team']})" for pid in (mine or hits)[:8]]
+    # "St Brown" is how everyone types Amon-Ra St. Brown, and "Amon Ra" the same
+    # from the other end: a query contained in exactly one active player's name
+    # is that player, before any fuzzy matching gets a chance to pick a stranger.
+    tight = q.replace(" ", "")
+    contains = [pid for pid in live if q in norm(db[pid]["name"]) or tight in norm(db[pid]["name"]).replace(" ", "")]
+    if len(contains) == 1:
+        return contains[0], []
+    if len(contains) > 1:
+        return None, [f"{db[pid]['name']} ({db[pid]['pos']}, {db[pid]['team']})" for pid in contains[:5]]
     close = difflib.get_close_matches(q, by_name.keys(), n=5, cutoff=0.72)
     if not close:
         return None, []
-    best = rank(by_name[close[0]])[0]
-    return best, [c for c in close[1:]]
+    # "Micah Parsons" is 0.72-close to "Micah Simon": close enough for difflib,
+    # a different player to everyone else. The surname has to agree, or this is
+    # a question for the owner rather than a confident answer.
+    tail = q.split()[-1]
+    agrees = [c for c in close
+              if c.split() and (c.split()[-1] == tail or difflib.SequenceMatcher(None, c.split()[-1], tail).ratio() >= 0.9)]
+    # A player who is actually on a roster this season outranks a closer string
+    # that belongs to nobody: "Jon Taylor" is Jonathan Taylor, not a teamless
+    # Jordan Taylor whose name happens to score higher.
+    agrees.sort(key=lambda c: (not db[rank(by_name[c])[0]]["team"],
+                               -difflib.SequenceMatcher(None, c, q).ratio()))
+    if not agrees:
+        return None, [f"{db[rank(by_name[c])[0]]['name']} ({db[rank(by_name[c])[0]]['pos']}, {db[rank(by_name[c])[0]]['team'] or 'FA'})"
+                      for c in close[:5]]
+    if len(agrees) > 1 and difflib.SequenceMatcher(None, agrees[0], q).ratio() < 0.9:
+        return None, [f"{db[rank(by_name[c])[0]]['name']} ({db[rank(by_name[c])[0]]['pos']}, {db[rank(by_name[c])[0]]['team'] or 'no team'})"
+                      for c in agrees[:4]]
+    best = rank(by_name[agrees[0]])[0]
+    # A surname match onto somebody with no NFL team is what a defensive player's
+    # name does here -- this index holds QB/RB/WR/TE/K/DEF only, so "Fred Warner"
+    # lands on a teamless "E.J. Warner". Only an almost-exact name may be teamless.
+    if not db[best]["team"] and difflib.SequenceMatcher(None, norm(db[best]["name"]), q).ratio() < 0.95:
+        return None, [f"{db[rank(by_name[c])[0]]['name']} ({db[rank(by_name[c])[0]]['pos']}, {db[rank(by_name[c])[0]]['team'] or 'no team'})"
+                      for c in agrees[:4]]
+    return best, [c for c in agrees[1:]]
 
 
 # --- league ------------------------------------------------------------------
@@ -372,7 +423,7 @@ def league_bundle(cfg: dict, league_id: str | None = None) -> dict:
 
 
 def fmt_player(pid: str, db: dict, proj: dict, key: str, extra: str = "") -> str:
-    p = db.get(pid) or {"name": pid, "pos": "?", "team": None, "inj": None}
+    p = db.get(pid) or {"name": f"player {pid} (position not tracked)", "pos": "?", "team": None, "inj": None}
     pr = proj.get(pid) or {}
     pts = pr.get(key)
     opp = pr.get("opp")
@@ -501,7 +552,10 @@ def cmd_matchup(a):
     me = next((m for m in matchups if b["mine"] and m["roster_id"] == b["mine"]["roster_id"]), None)
     if not me:
         die(f"no matchup for the owner in week {week} (bye week, playoffs not reached, or league not drafted)")
-    opp = next((m for m in matchups if m.get("matchup_id") == me.get("matchup_id") and m["roster_id"] != me["roster_id"]), None)
+    # matchup_id is null for every team not playing (eliminated in the playoffs,
+    # or the bye in an odd-sized league), and None == None would pair two of them.
+    opp = None if me.get("matchup_id") is None else next(
+        (m for m in matchups if m.get("matchup_id") == me.get("matchup_id") and m["roster_id"] != me["roster_id"]), None)
     owner_of = {r["roster_id"]: r.get("owner_id") for r in b["rosters"]}
 
     def side(m, label):
@@ -518,7 +572,7 @@ def cmd_matchup(a):
     if opp:
         side(opp, "OPPONENT")
     else:
-        print("No opponent this week.")
+        print("No opponent this week (bye, or eliminated from the playoffs).")
 
 
 def cmd_startsit(a):
@@ -537,14 +591,15 @@ def cmd_startsit(a):
     for q in a.names:
         pid, alts = find_player(q, db, mine)
         if not pid:
-            print(f"? '{q}': no confident match" + (f" - did they mean: {', '.join(alts)}" if alts else ""))
+            print(f"? '{q}': no confident match" + (f" - did they mean: {', '.join(alts)}" if alts else "")
+                  + " (only QB/RB/WR/TE/K and team defenses are tracked)")
             continue
         pts = (proj.get(pid) or {}).get(key)
         rows.append((pts if isinstance(pts, (int, float)) else -1, pid))
     for pts, pid in sorted(rows, reverse=True):
         p = db[pid]
         extra = matchup_note(pid, db, proj, ranks)
-        e = inj.get(norm(p["name"]))
+        e = injury_note(pid, db, inj)
         if e:
             extra += f" | ESPN: {e['status']} - {e['comment']}"
         for n in player_news(pid, db, 1):
@@ -620,13 +675,18 @@ def cmd_trade(a):
                 print(f"  ? '{q}': no confident match" + (f" - maybe {', '.join(alts)}" if alts else ""))
                 continue
             sp = (season.get(pid) or {}).get(key) or 0
-            gp = (season.get(pid) or {}).get("gp") or 17
-            per_game = sp / gp if gp else 0
+            # Sleeper's season projections report gp=1.0 for every team defense,
+            # which read as "98 points per game" and made a DST worth an elite RB.
+            # A real full-season row reports 18; anything under half a season is
+            # not a games-played count this can divide by.
+            gp = (season.get(pid) or {}).get("gp") or 0
+            gp = gp if gp >= 8 else 18
+            per_game = sp / gp
             total_season += per_game * weeks_left
             best = max(best, per_game)
             total_week += (wk.get(pid) or {}).get(key) or 0
             p = db[pid]
-            e = inj.get(norm(p["name"]))
+            e = injury_note(pid, db, inj)
             note = f" | ESPN: {e['status']} - {e['comment']}" if e else ""
             print(f"  {p['name']} ({p['pos']}, {p.get('team') or 'FA'}, age {p.get('age') or '?'}) - "
                   f"{per_game:.1f} proj/game, ~{per_game * weeks_left:.0f} pts rest of season"
@@ -662,7 +722,7 @@ def cmd_player(a):
     if sp:
         print(f"Season projection: {sp:.0f} {scoring_label(key)} pts")
     print(f"Age {p.get('age') or '?'}, {p.get('exp') if p.get('exp') is not None else '?'} years in the NFL")
-    e = espn_injuries().get(norm(p["name"]))
+    e = injury_note(pid, db, espn_injuries())
     if e:
         print(f"ESPN injury report: {e['status']} - {e['comment']}")
     for n in player_news(pid, db, 2):
@@ -738,6 +798,8 @@ def lock_issues(cfg: dict, hours: float) -> list[str]:
     out, used = [], set()
     for i, pid in enumerate(starters):
         slot = slots[i] if i < len(slots) else "FLEX"
+        if pid and pid != "0" and pid not in db:
+            continue  # a position this tool does not track (IDP): not an empty slot, and not ours to judge
         p = db.get(pid) if pid and pid != "0" else None
         g = games.get(p.get("team")) if p else None
         if p and g and g["state"] != "pre":
@@ -769,8 +831,15 @@ def lock_issues(cfg: dict, hours: float) -> list[str]:
         allowed = SLOT_POSITIONS.get(slot, {slot})
         options = sorted((pp for pp in bench if pp not in used and (db.get(pp) or {}).get("pos") in allowed and playable(pp)),
                          key=lambda pp: -((proj.get(pp) or {}).get(key) or 0))
-        swap = (f"best swap: {db[options[0]]['name']} ({(proj.get(options[0]) or {}).get(key) or 0:.1f} proj)"
-                if options else f"no healthy {slot} on the bench: check waivers --pos {','.join(sorted(allowed))}")
+        if options:
+            swap = f"best swap: {db[options[0]]['name']} ({(proj.get(options[0]) or {}).get(key) or 0:.1f} proj)"
+            # The move has to happen before EITHER game starts: a 4:25pm starter
+            # swapped for a 1:00pm bench player is already too late at 2pm.
+            swap_kick = (games.get(db[options[0]]["team"]) or {}).get("kickoff")
+            if swap_kick and swap_kick < when:
+                when = swap_kick
+        else:
+            swap = f"no healthy {slot} on the bench: check waivers --pos {','.join(sorted(allowed))}"
         used.update(options[:1])
         out.append(f"{slot}|{issue}|locks {when}|{swap}")
     return out
@@ -809,8 +878,10 @@ def cmd_injuries(a):
         print("No injury designations on your roster right now.")
         return
     inj = espn_injuries()
+    db = players()
+    by_name = {norm(p["name"]): pid for pid, p in db.items()}
     for name, pos, status, starting in rows:
-        e = inj.get(norm(name))
+        e = injury_note(by_name.get(norm(name), ""), db, inj)
         note = f" - {e['comment']}" if e and e.get("comment") else ""
         print(f"- {name} ({pos}) {status}{' - IN YOUR STARTING LINEUP' if starting else ' - bench'}{note}")
 
