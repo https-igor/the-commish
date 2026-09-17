@@ -31,6 +31,7 @@ skills/commish-setup/       onboarding: link Sleeper, first win, alerts
 skills/commish-alerts/      scheduled texts + register_alerts.py
 image/s6-overlay/           Agent Index usage reporter (s6 longrun)
 vendor/client.pin           pinned Agent Index client
+tests/                      the contract, stubbed feeds, no network
 ```
 
 ## Install
@@ -56,6 +57,16 @@ COMMISH_HOME=.commish-test python3 skills/commish-coach/scripts/commish.py team
 
 Usage is reported to the [Agent Index](https://aiworthusing.com/agent-index/the-commish)
 as `AGENT_ID=the-commish` (daily token counts per model, nothing else).
+
+## Tests
+
+The decisions that turn data into advice — who is startable, which bench player
+is a legal swap, how points-allowed ranks are built, which player a typed name
+resolves to — run with no network and no container:
+
+```sh
+python3 -m unittest discover tests
+```
 
 ## License
 

@@ -250,7 +250,8 @@ def matchup_note(pid: str, db: dict, proj: dict, ranks: dict) -> str:
     if not r:
         return ""
     rank, avg, n, total = r
-    label = "EASY" if rank <= total // 3 else ("TOUGH" if rank > total - total // 3 else "neutral")
+    third = max(1, total // 3)
+    label = "EASY" if rank <= third else ("TOUGH" if rank > total - third else "neutral")
     return (f" | matchup {label}: {opp} allows {avg:.1f}/g to {p['pos']}s "
             f"({ordinal(rank)}-most of {total}; {n}-week sample)")
 
