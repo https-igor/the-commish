@@ -33,6 +33,10 @@ image/s6-overlay/           Agent Index usage reporter (s6 longrun)
 vendor/client.pin           pinned Agent Index client
 ```
 
+## Install
+
+**[INSTALL.md](INSTALL.md) — step by step, about 15 minutes, no API keys.**
+
 ## Run locally
 
 ```sh
