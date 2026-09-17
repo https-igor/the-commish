@@ -9,12 +9,32 @@ Registered by `scripts/register_alerts.py` (create-if-missing, safe to re-run):
 
 | job | when (UTC) | what |
 | --- | --- | --- |
+| `commish-lock-reminder` | every 15 min | runs only when `commish.py lockwatch` output changes |
 | `commish-injury-watch` | every 30 min | runs only when `commish.py monitor` output changes |
 | `commish-sunday-lineup` | Sun 15:00 (11am ET) | lineup check before the early games |
 | `commish-tuesday-waivers` | Tue 22:00 (6pm ET) | waiver targets before claims run |
 
 Every run's final reply is texted to the owner, so **the final reply IS the
-text**: short, no preamble, no mention of crons or tools.
+text**: 3 lines max, no preamble, no mention of crons or tools, reasons only
+from tool output.
+
+## commish-lock-reminder (last-minute)
+
+You get a MONITOR CHANGE diff of `slot|problem|locks <kickoff UTC>|best swap` lines:
+starters with a problem whose game has NOT locked and kicks off within 3 hours.
+These are the texts that win weeks — make them instantly actionable:
+
+    ⚠️ Lineup locks soon: A.J. Brown is IR.
+    OUT A.J. Brown → IN Diggs (9.9 proj). Open Sleeper and swap now.
+
+- One line per problem, max 3 lines total. Kickoff as "in ~2h" (compute from
+  the UTC time), never a raw timestamp.
+- Questionable: "check inactives ~90 min before kickoff; if he's out, IN <swap>".
+- "no healthy … on the bench": name the top option from
+  `commish.py waivers --pos <POS> --limit 2`.
+- A line that DISAPPEARED means it was fixed or that game locked. Run
+  `commish.py lockcheck --hours 3`: if it prints nothing to fix, reply only
+  `✅ Lineup set for the next games.`
 
 ## commish-injury-watch
 

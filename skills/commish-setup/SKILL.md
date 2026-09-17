@@ -5,7 +5,7 @@ description: First-run onboarding for The Commish — link the owner's Sleeper f
 
 # The Commish — setup
 
-A conversation, not a form. Keep every message short.
+A conversation, not a form. Every message 3 lines max.
 
 ## 1. Say hi and ask for Sleeper
 
@@ -32,9 +32,10 @@ and name their biggest weekly edge. This is what makes them keep texting you.
 
 ## 4. Alerts
 
-Offer the three alerts in one text and register them when they say yes:
+Offer the alerts in one short text and register them when they say yes:
 
-- ⚠️ injury alerts for their roster (checked every 30 min, only texts on a change)
+- ⏰ last-minute lineup reminders (a starter is out/questionable/on bye and his game locks within 3h)
+- ⚠️ injury alerts for their roster (only texts on a change)
 - 🏈 Sunday-morning lineup check (11am ET)
 - 🔥 Tuesday-evening waiver targets (6pm ET)
 

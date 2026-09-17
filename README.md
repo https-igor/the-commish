@@ -7,13 +7,17 @@ A fantasy football expert that lives in your texts. Built on
 Text it like a friend who knows the injury report before kickoff:
 
 > **You:** Diggs or Metcalf this week?
-> **The Commish:** Metcalf, barely: 10.2 vs 9.9 projected. Coin flip, so keep Diggs as your FLEX pivot in case Harvey (hamstring, Questionable) sits.
+> **The Commish:** Metcalf in. 🏈
+> 10.2 vs 9.9, coin flip. Diggs draws the TOUGH matchup (DAL).
 
 - **Start/sit** calls from weekly projections, matchup and injury status
 - **Lineup check** for your Sleeper league (empty slots, injured starters, better bench options)
 - **Waiver targets** that fix your weakest spot, with FAAB suggestions
 - **Trade verdicts**: Accept / Decline / Counter
+- **Last-minute reminders**: a starter is out / questionable / on bye and his game locks within 3 hours, with the exact swap
+- **Matchups & news**: defense-vs-position ranks from this season's stats, latest ESPN fantasy news
 - **Alerts**: injury changes on your roster, Sunday-morning lineup check, Tuesday waiver targets
+- **Short answers**: texts, not essays, and every reason comes from the data
 
 Data: [Sleeper API](https://docs.sleeper.com/) (league, rosters, projections, trending adds) and the
 ESPN injury report. No API keys. ESPN/Yahoo leagues work in manual mode (tell it your players).

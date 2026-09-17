@@ -21,6 +21,9 @@ linked Sleeper account and caches. Nothing here writes outside it.
     commish.py trade --give "A, B" --get "C, D"
     commish.py player "<name>"              one player's card
     commish.py injuries                     injured/questionable players on my roster
+    commish.py news "<name>"                latest ESPN fantasy news for a player
+    commish.py defense [--pos WR]           which defenses give up the most points, by position
+    commish.py lockcheck [--hours 3]        starters with a problem whose game has not locked yet
     commish.py monitor                      stable snapshot for the alert cron
 """
 from __future__ import annotations
@@ -42,6 +45,16 @@ CONFIG = os.path.join(HOME, "config.json")
 SLEEPER = "https://api.sleeper.app/v1"
 PROJ = "https://api.sleeper.com/projections/nfl"
 ESPN_INJURIES = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+ESPN_NEWS = "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
+STATS = "https://api.sleeper.com/stats/nfl"
+ESPN_TEAM = {"WSH": "WAS", "JAC": "JAX", "LA": "LAR"}  # ESPN abbreviation -> Sleeper
+NOT_PLAYING = ("Out", "IR", "Doubtful", "Sus", "PUP", "NA", "COV")
+SLOT_POSITIONS = {
+    "QB": {"QB"}, "RB": {"RB"}, "WR": {"WR"}, "TE": {"TE"}, "K": {"K"}, "DEF": {"DEF"},
+    "FLEX": {"RB", "WR", "TE"}, "WRRB_FLEX": {"RB", "WR"}, "REC_FLEX": {"WR", "TE"},
+    "SUPER_FLEX": {"QB", "RB", "WR", "TE"},
+}
 POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 UA = "the-commish/1.0 (+https://aiworthusing.com/agent-index)"
 
@@ -125,7 +138,7 @@ def nfl_state() -> dict:
 
 def players() -> dict:
     """Compact player index. Sleeper asks that the full file be pulled at most daily."""
-    path = os.path.join(HOME, "cache", "players_compact.json")
+    path = os.path.join(HOME, "cache", "players_compact_v2.json")
     try:
         if time.time() - os.path.getmtime(path) < 86400:
             with open(path) as f:
@@ -148,6 +161,7 @@ def players() -> dict:
             "active": bool(p.get("active")),
             "age": p.get("age"),
             "exp": p.get("years_exp"),
+            "espn": p.get("espn_id"),
         }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".tmp", "w") as f:
@@ -194,6 +208,81 @@ def espn_injuries() -> dict:
             name = ath.get("displayName") or ""
             if name:
                 out[norm(name)] = {"status": inj.get("status"), "comment": inj.get("shortComment") or ""}
+    return out
+
+
+def ordinal(n: int) -> str:
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def defense_ranks(season: str, week: int, db: dict, key: str) -> dict:
+    """(defense team, position) -> (rank, avg pts allowed, games). Rank 1 = gives up the most = easiest matchup.
+
+    Built from Sleeper's weekly player stats of every completed week this season.
+    """
+    allowed: dict[tuple, dict] = {}
+    for w in range(1, int(week)):
+        rows = cached(f"stats_{season}_w{w}.json",
+                      f"{STATS}/{season}/{w}?season_type=regular&" + "&".join(f"position%5B%5D={p}" for p in POSITIONS),
+                      6 * 3600)
+        for r in rows or []:
+            pts = (r.get("stats") or {}).get(key)
+            p = db.get(str(r.get("player_id")))
+            opp = r.get("opponent")
+            if pts is None or not p or not opp or p["pos"] == "DEF":
+                continue
+            games = allowed.setdefault((opp, p["pos"]), {})
+            games[w] = games.get(w, 0.0) + pts
+    out = {}
+    for pos in ("QB", "RB", "WR", "TE", "K"):
+        teams = [(sum(g.values()) / len(g), t, len(g)) for (t, ps), g in allowed.items() if ps == pos and g]
+        teams.sort(reverse=True)
+        for i, (avg, team, n) in enumerate(teams, 1):
+            out[(team, pos)] = (i, avg, n, len(teams))
+    return out
+
+
+def matchup_note(pid: str, db: dict, proj: dict, ranks: dict) -> str:
+    p = db.get(pid) or {}
+    opp = (proj.get(pid) or {}).get("opp")
+    r = ranks.get((opp, p.get("pos"))) if opp else None
+    if not r:
+        return ""
+    rank, avg, n, total = r
+    label = "EASY" if rank <= total // 3 else ("TOUGH" if rank > total - total // 3 else "neutral")
+    return (f" | matchup {label}: {opp} allows {avg:.1f}/g to {p['pos']}s "
+            f"({ordinal(rank)}-most of {total}; {n}-week sample)")
+
+
+def kickoffs(week: int) -> dict:
+    """Sleeper team -> {'kickoff': ISO UTC, 'state': pre|in|post} for this week's games."""
+    data = cached(f"scoreboard_w{week}.json", f"{ESPN_SCOREBOARD}?week={week}&seasontype=2", 600) or {}
+    out = {}
+    for ev in data.get("events", []):
+        state = ((ev.get("status") or {}).get("type") or {}).get("state")
+        for comp in (ev.get("competitions") or [{}])[0].get("competitors", []):
+            abbr = (comp.get("team") or {}).get("abbreviation")
+            if abbr:
+                out[ESPN_TEAM.get(abbr, abbr)] = {"kickoff": ev.get("date"), "state": state}
+    return out
+
+
+def player_news(pid: str, db: dict, limit: int = 2) -> list[str]:
+    espn = (db.get(pid) or {}).get("espn")
+    if not espn:
+        return []
+    try:
+        data = cached(f"news_{espn}.json", f"{ESPN_NEWS}?limit={limit + 3}&playerId={espn}", 1800) or {}
+    except SystemExit:
+        return []
+    out = []
+    for item in data.get("feed", []):
+        text = (item.get("description") or item.get("headline") or "").strip()
+        when = (item.get("published") or "")[:10]
+        if text:
+            out.append(f"{when}: {text}")
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -362,6 +451,7 @@ def cmd_team(a):
     st = nfl_state()
     db, key = players(), scoring_key(b["league"])
     proj = projections(st["season"], st["display_week"])
+    ranks = defense_ranks(st["season"], st["display_week"], db, key)
     mine = b["mine"]
     starters = [s for s in mine.get("starters") or [] if s and s != "0"]
     bench = [p for p in mine.get("players") or [] if p not in starters and p not in (mine.get("reserve") or [])]
@@ -373,12 +463,12 @@ def cmd_team(a):
     slots = [x for x in b["league"].get("roster_positions") or [] if x not in ("BN", "IR", "TAXI")]
     for i, pid in enumerate(mine.get("starters") or []):
         slot = slots[i] if i < len(slots) else "?"
-        print(f"  {slot}: " + (fmt_player(pid, db, proj, key) if pid and pid != "0" else "EMPTY SLOT"))
+        print(f"  {slot}: " + (fmt_player(pid, db, proj, key, matchup_note(pid, db, proj, ranks)) if pid and pid != "0" else "EMPTY SLOT"))
     total = sum((proj.get(p) or {}).get(key) or 0 for p in starters)
     print(f"  projected starters total: {total:.1f}")
     print("BENCH:")
     for pid in sorted(bench, key=lambda p: -((proj.get(p) or {}).get(key) or 0)):
-        print("  " + fmt_player(pid, db, proj, key))
+        print("  " + fmt_player(pid, db, proj, key, matchup_note(pid, db, proj, ranks)))
     if mine.get("reserve"):
         print("IR:")
         for pid in mine["reserve"]:
@@ -426,6 +516,7 @@ def cmd_startsit(a):
     proj = projections(st["season"], st["display_week"])
     inj = espn_injuries()
     hot = trending("add")
+    ranks = defense_ranks(st["season"], st["display_week"], db, key)
     print(f"Week {st['display_week']} start/sit - {scoring_label(key)}{'' if b else ' (no league linked, assuming PPR)'}")
     rows = []
     for q in a.names:
@@ -437,10 +528,13 @@ def cmd_startsit(a):
         rows.append((pts if isinstance(pts, (int, float)) else -1, pid))
     for pts, pid in sorted(rows, reverse=True):
         p = db[pid]
-        extra = ""
+        extra = matchup_note(pid, db, proj, ranks)
         e = inj.get(norm(p["name"]))
         if e:
             extra += f" | ESPN: {e['status']} - {e['comment']}"
+        for n in player_news(pid, db, 1):
+            if not (e and e.get("comment") and e["comment"] in n):
+                extra += f" | news {n}"
         if pid in hot:
             extra += f" | trending: added in {hot[pid]:,} leagues (24h)"
         if b and pid not in mine:
@@ -548,7 +642,7 @@ def cmd_player(a):
     wk = projections(st["season"], st["display_week"])
     season = projections(st["season"], None)
     p = db[pid]
-    print(fmt_player(pid, db, wk, key))
+    print(fmt_player(pid, db, wk, key, matchup_note(pid, db, wk, defense_ranks(st["season"], st["display_week"], db, key))))
     sp = (season.get(pid) or {}).get(key)
     if sp:
         print(f"Season projection: {sp:.0f} {scoring_label(key)} pts")
@@ -556,6 +650,8 @@ def cmd_player(a):
     e = espn_injuries().get(norm(p["name"]))
     if e:
         print(f"ESPN injury report: {e['status']} - {e['comment']}")
+    for n in player_news(pid, db, 2):
+        print(f"News {n}")
     hot = trending("add")
     if pid in hot:
         print(f"Trending: added in {hot[pid]:,} Sleeper leagues in the last 24h")
@@ -567,6 +663,114 @@ def cmd_player(a):
             print("In your league: on YOUR roster")
         else:
             print(f"In your league: rostered by {b['names'].get(owner.get('owner_id'), 'another team')}")
+
+
+def cmd_news(a):
+    db = players()
+    pid, alts = find_player(a.name, db)
+    if not pid:
+        die(f"no confident match for '{a.name}'" + (f" - maybe {', '.join(alts)}" if alts else ""))
+    items = player_news(pid, db, a.limit)
+    print(f"{db[pid]['name']} ({db[pid]['pos']}, {db[pid].get('team') or 'FA'})")
+    for n in items or ["no ESPN fantasy news found for this player"]:
+        print(f"- {n}")
+
+
+def cmd_defense(a):
+    cfg = load_config()
+    st = nfl_state()
+    db = players()
+    b = league_bundle(cfg) if cfg.get("league_id") else None
+    key = scoring_key(b["league"]) if b else "pts_ppr"
+    ranks = defense_ranks(st["season"], st["display_week"], db, key)
+    pos = a.pos.upper()
+    rows = sorted(((r[0], t, r[1], r[2]) for (t, ps), r in ranks.items() if ps == pos))
+    if not rows:
+        die("no completed games yet this season")
+    print(f"Points allowed to {pos}s per game ({scoring_label(key)}), weeks 1-{int(st['display_week']) - 1}. 1st = easiest matchup.")
+    for rank, team, avg, n in rows[: a.limit]:
+        print(f"{ordinal(rank)} {team}: {avg:.1f}/g ({n}g)")
+    print("...")
+    for rank, team, avg, n in rows[-3:]:
+        print(f"{ordinal(rank)} {team}: {avg:.1f}/g ({n}g)  <- toughest")
+
+
+def lock_issues(cfg: dict, hours: float) -> list[str]:
+    """Starters with a problem whose game has NOT started and kicks off within `hours`, plus the best legal swap."""
+    import datetime
+    b = league_bundle(cfg)
+    mine = b["mine"]
+    if not mine:
+        return []
+    st = nfl_state()
+    week = st["display_week"]
+    db, key = players(), scoring_key(b["league"])
+    proj = projections(st["season"], week)
+    games = kickoffs(week)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    slots = [x for x in b["league"].get("roster_positions") or [] if x not in ("BN", "IR", "TAXI")]
+    starters = list(mine.get("starters") or [])
+    bench = [p for p in mine.get("players") or [] if p not in starters and p not in (mine.get("reserve") or [])]
+
+    def unlocked(pid):
+        g = games.get((db.get(pid) or {}).get("team"))
+        return bool(g) and g["state"] == "pre"
+
+    def playable(pid):
+        p = db.get(pid) or {}
+        return p.get("inj") not in NOT_PLAYING and (proj.get(pid) or {}).get("opp") and unlocked(pid)
+
+    out, used = [], set()
+    for i, pid in enumerate(starters):
+        slot = slots[i] if i < len(slots) else "FLEX"
+        p = db.get(pid) if pid and pid != "0" else None
+        g = games.get(p.get("team")) if p else None
+        if p and g and g["state"] != "pre":
+            continue  # already locked: nothing the owner can do
+        if p and g:
+            kick = datetime.datetime.fromisoformat(g["kickoff"].replace("Z", "+00:00"))
+            if not (now < kick <= now + datetime.timedelta(hours=hours)):
+                continue
+            when = g["kickoff"]
+        else:
+            # empty slot or no game this week: fix before the earliest remaining kickoff
+            upcoming = sorted(x["kickoff"] for x in games.values() if x["state"] == "pre")
+            if not upcoming:
+                continue
+            kick = datetime.datetime.fromisoformat(upcoming[0].replace("Z", "+00:00"))
+            if kick > now + datetime.timedelta(hours=hours):
+                continue
+            when = upcoming[0]
+        if not p:
+            issue = "EMPTY SLOT"
+        elif p.get("inj") in NOT_PLAYING:
+            issue = f"{p['name']} is {p['inj']}"
+        elif not (proj.get(pid) or {}).get("opp"):
+            issue = f"{p['name']} has no game this week"
+        elif p.get("inj") == "Questionable":
+            issue = f"{p['name']} is Questionable (check inactives ~90 min before kickoff)"
+        else:
+            continue
+        allowed = SLOT_POSITIONS.get(slot, {slot})
+        options = sorted((pp for pp in bench if pp not in used and (db.get(pp) or {}).get("pos") in allowed and playable(pp)),
+                         key=lambda pp: -((proj.get(pp) or {}).get(key) or 0))
+        swap = (f"best swap: {db[options[0]]['name']} ({(proj.get(options[0]) or {}).get(key) or 0:.1f} proj)"
+                if options else f"no healthy {slot} on the bench: check waivers --pos {','.join(sorted(allowed))}")
+        used.update(options[:1])
+        out.append(f"{slot}|{issue}|locks {when}|{swap}")
+    return out
+
+
+def cmd_lockcheck(a):
+    cfg = load_config()
+    if not cfg.get("league_id"):
+        print("no league linked")
+        return
+    rows = lock_issues(cfg, a.hours)
+    if not rows:
+        print(f"Nothing to fix in games starting within {a.hours:g}h.")
+    for r in rows:
+        print(r)
 
 
 def roster_injuries(cfg: dict) -> list[tuple[str, str, str, bool]]:
@@ -605,6 +809,15 @@ def cmd_monitor(a):
         print(f"{name}|{pos}|{status}|{'starter' if starting else 'bench'}")
 
 
+def cmd_lockwatch(a):
+    """Byte-stable output for the last-minute cron: only unfixed starters whose game locks soon."""
+    cfg = load_config()
+    if not cfg.get("league_id"):
+        return
+    for r in lock_issues(cfg, a.hours):
+        print(r)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="commish.py", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -620,6 +833,11 @@ def main(argv=None):
     s.add_argument("--league"); s.set_defaults(fn=cmd_trade)
     s = sub.add_parser("player"); s.add_argument("name"); s.set_defaults(fn=cmd_player)
     sub.add_parser("monitor").set_defaults(fn=cmd_monitor)
+    s = sub.add_parser("news"); s.add_argument("name"); s.add_argument("--limit", type=int, default=3); s.set_defaults(fn=cmd_news)
+    s = sub.add_parser("defense"); s.add_argument("--pos", default="WR"); s.add_argument("--limit", type=int, default=8)
+    s.set_defaults(fn=cmd_defense)
+    s = sub.add_parser("lockcheck"); s.add_argument("--hours", type=float, default=3); s.set_defaults(fn=cmd_lockcheck)
+    s = sub.add_parser("lockwatch"); s.add_argument("--hours", type=float, default=3); s.set_defaults(fn=cmd_lockwatch)
     a = ap.parse_args(argv)
     a.fn(a)
 

@@ -17,6 +17,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 JOBS = [
     {
+        "name": "commish-lock-reminder",
+        "schedule": "*/15 * * * *",
+        "monitor": "commish_lockwatch.py",
+        "prompt": "Last-minute lineup reminder: a starter with a problem has a game locking soon (or that changed). "
+                  "Follow the commish-alerts skill (commish-lock-reminder) and reply with the text for the owner.",
+    },
+    {
         "name": "commish-injury-watch",
         "schedule": "*/30 * * * *",
         "monitor": "commish_monitor.py",
@@ -55,7 +62,8 @@ def main():
         return 1
     scripts = os.path.join(HERMES_HOME, "scripts")
     os.makedirs(scripts, exist_ok=True)
-    shutil.copyfile(os.path.join(HERE, "commish_monitor.py"), os.path.join(scripts, "commish_monitor.py"))
+    for name in ("commish_monitor.py", "commish_lockwatch.py"):
+        shutil.copyfile(os.path.join(HERE, name), os.path.join(scripts, name))
 
     have = existing_names()
     failed = 0
