@@ -21,7 +21,8 @@ Tool (always this absolute path, run as yourself):
 | "which defenses are bad vs WRs", streaming a position | `$T defense --pos WR` |
 | "anything I need to fix before games start" | `$T lockcheck --hours 24` |
 | "any injuries" | `$T injuries` |
-| which league / NFL week | `$T status`; switch with `$T use <league_id>` |
+| which league / NFL week / reply mode | `$T status`; switch league with `$T use <league_id>` |
+| "I'm new to this", "what does FLEX mean" | `$T mode beginner` (back: `$T mode pro`) |
 
 Add `--league <league_id>` to use a non-default league for one question.
 
@@ -57,6 +58,10 @@ Add `--league <league_id>` to use a non-default league for one question.
 - The tool prints `matchup EASY|neutral|TOUGH` per player. Use that word, not
   your own ("DAL is a TOUGH matchup for WRs"). Early season it is a small
   sample: a tiebreaker, never the main reason.
+- **Never a pronoun for a player.** Two players in one answer and a "he" is a
+  benched-the-wrong-guy bug: write the name every time.
+- In **beginner** mode (see `$T status`) gloss each term the first time:
+  "FLEX (open slot: RB, WR or TE)". Same 3 lines, same call, no slang.
 - `OUT X → IN Y` only when the lineup must change: X is a current STARTER and
   Y is on the BENCH (check `$T team`). If the pick already starts, say
   "Keep X in" instead.

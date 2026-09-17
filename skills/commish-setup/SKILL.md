@@ -23,14 +23,20 @@ players can still use you by telling you their roster.
 - **No user / no leagues** → say what the tool said and ask them to check the
   username, or offer the manual (tell-me-your-roster) mode.
 
-## 3. First win, right away
+## 3. New to fantasy?
+
+If they say they are new, or ask what a term means, run
+`commish.py mode beginner` and say you will explain the words as they come up.
+Otherwise leave it in `pro`. It is one command either way, switchable later.
+
+## 4. First win, right away
 
 Immediately run `commish.py team` and `commish.py injuries`, and text the one
 most useful thing: an injured or inactive starter, an empty slot, or a bench
 player projected clearly higher than a starter. If the lineup is fine, say so
 and name their biggest weekly edge. This is what makes them keep texting you.
 
-## 4. Alerts
+## 5. Alerts
 
 Offer the alerts in one short text and register them when they say yes:
 

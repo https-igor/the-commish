@@ -13,7 +13,8 @@ linked Sleeper account and caches. Nothing here writes outside it.
 
     commish.py link <sleeper_username>      link the owner's Sleeper account
     commish.py use <league_id>              pick the default league
-    commish.py status                       what is linked, current NFL week
+    commish.py status                       what is linked, current NFL week, reply mode
+    commish.py mode <pro|beginner>          how much football jargon to explain
     commish.py team                         my roster, projections, injuries
     commish.py matchup                      this week's opponent, projected totals
     commish.py startsit "<name>" "<name>"   compare players for this week
@@ -430,10 +431,23 @@ def cmd_use(a):
     print(f"Default league: {ids[a.league_id]['name']} ({a.league_id})")
 
 
+MODES = ("pro", "beginner")
+
+
+def cmd_mode(a):
+    cfg = load_config()
+    if a.mode not in MODES:
+        die(f"mode must be one of: {', '.join(MODES)}")
+    cfg["mode"] = a.mode
+    save_config(cfg)
+    print(f"Reply mode: {a.mode}" + (" (explain the jargon, no slang)" if a.mode == "beginner" else " (fantasy shorthand, no explanations)"))
+
+
 def cmd_status(a):
     st = nfl_state()
     cfg = load_config()
     print(f"NFL {st['season']} {st['season_type']} season, week {st['display_week']}.")
+    print(f"Reply mode: {cfg.get('mode', 'pro')}")
     if not cfg.get("user_id"):
         print("No Sleeper account linked. Onboarding: ask for their Sleeper username (commish-setup).")
         return
@@ -833,6 +847,7 @@ def main(argv=None):
     s.add_argument("--league"); s.set_defaults(fn=cmd_trade)
     s = sub.add_parser("player"); s.add_argument("name"); s.set_defaults(fn=cmd_player)
     sub.add_parser("monitor").set_defaults(fn=cmd_monitor)
+    s = sub.add_parser("mode"); s.add_argument("mode"); s.set_defaults(fn=cmd_mode)
     s = sub.add_parser("news"); s.add_argument("name"); s.add_argument("--limit", type=int, default=3); s.set_defaults(fn=cmd_news)
     s = sub.add_parser("defense"); s.add_argument("--pos", default="WR"); s.add_argument("--limit", type=int, default=8)
     s.set_defaults(fn=cmd_defense)
