@@ -91,9 +91,7 @@ def fetch(url: str, timeout: int = 30):
 
 def cached(name: str, url: str, max_age: int):
     """JSON from cache when fresh, else fetched and stored. Stale cache beats nothing."""
-    os.makedirs(HOME, exist_ok=True)
     path = os.path.join(HOME, "cache", name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         if time.time() - os.path.getmtime(path) < max_age:
             with open(path) as f:
@@ -107,27 +105,38 @@ def cached(name: str, url: str, max_age: int):
             with open(path) as f:
                 return json.load(f)
         raise
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f)
-    os.replace(tmp, path)
+    if data is not None:
+        write_json(path, data)
     return data
+
+
+def write_json(path: str, data) -> None:
+    """Atomic, and per-process: the monitor cron and a chat turn write the same caches."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except OSError as error:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die(f"cannot write {path}: {error}. Set COMMISH_HOME to a writable directory.")
 
 
 def load_config() -> dict:
     try:
         with open(CONFIG) as f:
-            return json.load(f)
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
 
 def save_config(cfg: dict) -> None:
-    os.makedirs(HOME, exist_ok=True)
-    tmp = CONFIG + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.replace(tmp, CONFIG)
+    write_json(CONFIG, cfg)
 
 
 # --- NFL data ----------------------------------------------------------------
@@ -164,15 +173,12 @@ def players() -> dict:
             "exp": p.get("years_exp"),
             "espn": p.get("espn_id"),
         }
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w") as f:
-        json.dump(compact, f)
-    os.replace(path + ".tmp", path)
+    write_json(path, compact)
     return compact
 
 
 def projections(season: str, week: int | None) -> dict:
-    """player_id -> {'pts_ppr','pts_half_ppr','pts_std','opp'} for a week, or the season when week is None."""
+    """player_id -> {'stats': the whole projected line, 'opp': opponent} for a week, or the season when week is None."""
     qs = "season_type=regular&" + "&".join(f"position%5B%5D={p}" for p in POSITIONS)
     if week is None:
         rows = cached(f"proj_{season}_season.json", f"{PROJ}/{season}?{qs}", 6 * 3600)
@@ -181,14 +187,69 @@ def projections(season: str, week: int | None) -> dict:
     out = {}
     for r in rows or []:
         st = r.get("stats") or {}
-        out[str(r.get("player_id"))] = {
-            "pts_ppr": st.get("pts_ppr"),
-            "pts_half_ppr": st.get("pts_half_ppr"),
-            "pts_std": st.get("pts_std"),
-            "gp": st.get("gp"),
-            "opp": r.get("opponent"),
-        }
+        out[str(r.get("player_id"))] = {"stats": st, "gp": st.get("gp"), "opp": r.get("opponent")}
     return out
+
+
+# Settings Sleeper carries that are not a per-stat multiplier; dotting them in
+# would add a roster rule to a player's score.
+NON_SCORING = {"rec_yd_bonus", "pass_yd_bonus"}
+
+
+def custom_scoring(league: dict | None) -> bool:
+    """Whether this league's settings say something the PPR/half/standard buckets cannot.
+
+    Six-point passing touchdowns, per-first-down points, long-reception bonuses,
+    a TE premium: each of those moves a player's projection by enough to change
+    who starts, and none of them exist in Sleeper's three precomputed columns.
+    """
+    settings = (league or {}).get("scoring_settings") or {}
+    if not settings:
+        return False
+    if settings.get("pass_td", 4) != 4 or settings.get("rush_td", 6) != 6 or settings.get("rec_td", 6) != 6:
+        return True
+    # fgm_20_29 and friends are every league's kicker table, not a custom rule:
+    # only receiving/rushing/passing distance and first-down bonuses count.
+    def unusual(k, value):
+        if not value:
+            return False
+        if k.startswith("bonus_"):
+            return True
+        if k.startswith(("rec_", "rush_", "pass_")):
+            return k.endswith("_fd") or "_20_29" in k or "_30_39" in k or "_40p" in k
+        return False
+
+    return any(unusual(k, value) for k, value in settings.items())
+
+
+def scorer(league: dict | None):
+    """A function row -> projected points in THIS league's scoring.
+
+    Half the leagues on Sleeper are not PPR/half/standard: six-point passing
+    touchdowns, a TE reception bonus, first-down points, long-reception bonuses.
+    Sleeper's own `pts_ppr` family cannot express those, and using it there is
+    not a rounding error -- measured on a real superflex league, a TE projected
+    8.8 by `pts_half_ppr` is 30.4 under the league's actual settings, which
+    changes who starts. So the line is scored against the league's settings when
+    they are richer than the buckets, and the bucket is the fallback.
+    """
+    key = scoring_key(league)
+    settings = {k: v for k, v in ((league or {}).get("scoring_settings") or {}).items()
+                if isinstance(v, (int, float)) and k not in NON_SCORING}
+    # Sleeper's own column when the league fits one: it is what the app shows,
+    # and matching the app is worth more than re-deriving the same number here.
+    if not settings or not custom_scoring(league):
+        return lambda row: (row or {}).get("stats", {}).get(key)
+
+    def score(row):
+        stats = (row or {}).get("stats") or {}
+        if not stats:
+            return None
+        total = sum(value * settings[k] for k, value in stats.items()
+                    if k in settings and isinstance(value, (int, float)))
+        return total
+
+    return score
 
 
 def trending(kind: str = "add") -> dict:
@@ -235,7 +296,7 @@ def ordinal(n: int) -> str:
     return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
 
 
-def defense_ranks(season: str, week: int, db: dict, key: str) -> dict:
+def defense_ranks(season: str, week: int, db: dict, score) -> dict:
     """(defense team, position) -> (rank, avg pts allowed, games). Rank 1 = gives up the most = easiest matchup.
 
     Built from Sleeper's weekly player stats of every completed week this season.
@@ -246,7 +307,7 @@ def defense_ranks(season: str, week: int, db: dict, key: str) -> dict:
                       f"{STATS}/{season}/{w}?season_type=regular&" + "&".join(f"position%5B%5D={p}" for p in POSITIONS),
                       6 * 3600)
         for r in rows or []:
-            pts = (r.get("stats") or {}).get(key)
+            pts = score({"stats": r.get("stats") or {}})
             p = db.get(str(r.get("player_id")))
             opp = r.get("opponent")
             if pts is None or not p or not opp or p["pos"] == "DEF":
@@ -403,17 +464,27 @@ def scoring_key(league: dict | None) -> str:
     return "pts_std"
 
 
-def scoring_label(key: str) -> str:
-    return {"pts_ppr": "PPR", "pts_half_ppr": "Half-PPR", "pts_std": "Standard"}[key]
+def scoring_label(key: str, league: dict | None = None) -> str:
+    base = {"pts_ppr": "PPR", "pts_half_ppr": "Half-PPR", "pts_std": "Standard"}[key]
+    return f"{base}+ (this league's own settings)" if custom_scoring(league) else base
 
 
 def league_bundle(cfg: dict, league_id: str | None = None) -> dict:
     lid = league_id or cfg.get("league_id")
     if not lid:
+        if cfg.get("leagues"):
+            listed = ", ".join(f"{l.get('name')} ({l['league_id']})" for l in cfg["leagues"])
+            die(f"several leagues on this account and no default yet -- ask which one, then run: "
+                f"commish.py use <league_id>. Leagues: {listed}")
         die("no league linked yet -- run: commish.py link <sleeper_username>")
     league = cached(f"league_{lid}.json", f"{SLEEPER}/league/{lid}", 3600)
     if not league:
         die(f"Sleeper has no league {lid}")
+    now = nfl_state()["league_season"]
+    if str(league.get("season")) != str(now):
+        die(f"league {lid} is a {league.get('season')} league ({league.get('status')}), and this season is {now}. "
+            f"Its rosters would be scored against {now} projections and live scores, which is two seasons in one line. "
+            f"Link this season's league: commish.py link <sleeper_username>")
     rosters = cached(f"rosters_{lid}.json", f"{SLEEPER}/league/{lid}/rosters", 600)
     users = cached(f"users_{lid}.json", f"{SLEEPER}/league/{lid}/users", 3600)
     names = {u["user_id"]: (u.get("metadata") or {}).get("team_name") or u.get("display_name") for u in users or []}
@@ -422,10 +493,17 @@ def league_bundle(cfg: dict, league_id: str | None = None) -> dict:
     return {"league": league, "rosters": rosters or [], "names": names, "mine": mine}
 
 
-def fmt_player(pid: str, db: dict, proj: dict, key: str, extra: str = "") -> str:
+def require_mine(b: dict) -> dict:
+    if not b["mine"]:
+        die(f"the linked Sleeper account has no team in {b['league'].get('name')} "
+            f"({b['league'].get('league_id')}) -- pick one of your own leagues with commish.py use <league_id>")
+    return b["mine"]
+
+
+def fmt_player(pid: str, db: dict, proj: dict, score, extra: str = "") -> str:
     p = db.get(pid) or {"name": f"player {pid} (position not tracked)", "pos": "?", "team": None, "inj": None}
     pr = proj.get(pid) or {}
-    pts = pr.get(key)
+    pts = score(pr)
     opp = pr.get("opp")
     inj = f" [{p['inj']}{' - ' + p['inj_part'] if p.get('inj_part') else ''}]" if p.get("inj") else ""
     if opp:
@@ -512,12 +590,11 @@ def cmd_status(a):
 def cmd_team(a):
     cfg = load_config()
     b = league_bundle(cfg, a.league)
-    if not b["mine"]:
-        die("could not find the owner's roster in this league")
+    require_mine(b)
     st = nfl_state()
-    db, key = players(), scoring_key(b["league"])
+    db, key, score = players(), scoring_key(b["league"]), scorer(b["league"])
     proj = projections(st["season"], st["display_week"])
-    ranks = defense_ranks(st["season"], st["display_week"], db, key)
+    ranks = defense_ranks(st["season"], st["display_week"], db, score)
     mine = b["mine"]
     starters = [s for s in mine.get("starters") or [] if s and s != "0"]
     bench = [p for p in mine.get("players") or [] if p not in starters and p not in (mine.get("reserve") or [])]
@@ -529,24 +606,25 @@ def cmd_team(a):
     slots = [x for x in b["league"].get("roster_positions") or [] if x not in ("BN", "IR", "TAXI")]
     for i, pid in enumerate(mine.get("starters") or []):
         slot = slots[i] if i < len(slots) else "?"
-        print(f"  {slot}: " + (fmt_player(pid, db, proj, key, matchup_note(pid, db, proj, ranks)) if pid and pid != "0" else "EMPTY SLOT"))
-    total = sum((proj.get(p) or {}).get(key) or 0 for p in starters)
+        print(f"  {slot}: " + (fmt_player(pid, db, proj, score, matchup_note(pid, db, proj, ranks)) if pid and pid != "0" else "EMPTY SLOT"))
+    total = sum(score(proj.get(p)) or 0 for p in starters)
     print(f"  projected starters total: {total:.1f}")
     print("BENCH:")
-    for pid in sorted(bench, key=lambda p: -((proj.get(p) or {}).get(key) or 0)):
-        print("  " + fmt_player(pid, db, proj, key, matchup_note(pid, db, proj, ranks)))
+    for pid in sorted(bench, key=lambda p: -(score(proj.get(p)) or 0)):
+        print("  " + fmt_player(pid, db, proj, score, matchup_note(pid, db, proj, ranks)))
     if mine.get("reserve"):
         print("IR:")
         for pid in mine["reserve"]:
-            print("  " + fmt_player(pid, db, proj, key))
+            print("  " + fmt_player(pid, db, proj, score))
 
 
 def cmd_matchup(a):
     cfg = load_config()
     b = league_bundle(cfg, a.league)
+    require_mine(b)
     st = nfl_state()
     week = st["display_week"]
-    db, key = players(), scoring_key(b["league"])
+    db, key, score = players(), scoring_key(b["league"]), scorer(b["league"])
     proj = projections(st["season"], week)
     matchups = fetch(f"{SLEEPER}/league/{b['league']['league_id']}/matchups/{week}") or []
     me = next((m for m in matchups if b["mine"] and m["roster_id"] == b["mine"]["roster_id"]), None)
@@ -560,12 +638,12 @@ def cmd_matchup(a):
 
     def side(m, label):
         starters = [p for p in m.get("starters") or [] if p and p != "0"]
-        projected = sum((proj.get(p) or {}).get(key) or 0 for p in starters)
+        projected = sum(score(proj.get(p)) or 0 for p in starters)
         print(f"{label}: {b['names'].get(owner_of.get(m['roster_id']), 'unknown')} - "
               f"live points {m.get('points') or 0:.1f}, projected starters {projected:.1f}")
         for p in starters:
             live = (m.get("players_points") or {}).get(p)
-            print("  " + fmt_player(p, db, proj, key, f" | live {live:.1f}" if isinstance(live, (int, float)) and live else ""))
+            print("  " + fmt_player(p, db, proj, score, f" | live {live:.1f}" if isinstance(live, (int, float)) and live else ""))
 
     print(f"Week {week} matchup - {scoring_label(key)}")
     side(me, "YOU")
@@ -581,11 +659,12 @@ def cmd_startsit(a):
     db = players()
     b = league_bundle(cfg, a.league) if cfg.get("league_id") or a.league else None
     key = scoring_key(b["league"]) if b else "pts_ppr"
+    score = scorer(b["league"] if b else None)
     mine = set((b or {}).get("mine", {}) and b["mine"].get("players") or [])
     proj = projections(st["season"], st["display_week"])
     inj = espn_injuries()
     hot = trending("add")
-    ranks = defense_ranks(st["season"], st["display_week"], db, key)
+    ranks = defense_ranks(st["season"], st["display_week"], db, score)
     print(f"Week {st['display_week']} start/sit - {scoring_label(key)}{'' if b else ' (no league linked, assuming PPR)'}")
     rows = []
     for q in a.names:
@@ -594,7 +673,7 @@ def cmd_startsit(a):
             print(f"? '{q}': no confident match" + (f" - did they mean: {', '.join(alts)}" if alts else "")
                   + " (only QB/RB/WR/TE/K and team defenses are tracked)")
             continue
-        pts = (proj.get(pid) or {}).get(key)
+        pts = score(proj.get(pid))
         rows.append((pts if isinstance(pts, (int, float)) else -1, pid))
     for pts, pid in sorted(rows, reverse=True):
         p = db[pid]
@@ -609,14 +688,15 @@ def cmd_startsit(a):
             extra += f" | trending: added in {hot[pid]:,} leagues (24h)"
         if b and pid not in mine:
             extra += " | not on your roster"
-        print("- " + fmt_player(pid, db, proj, key, extra))
+        print("- " + fmt_player(pid, db, proj, score, extra))
 
 
 def cmd_waivers(a):
     cfg = load_config()
     b = league_bundle(cfg, a.league)
+    require_mine(b)
     st = nfl_state()
-    db, key = players(), scoring_key(b["league"])
+    db, key, score = players(), scoring_key(b["league"]), scorer(b["league"])
     proj = projections(st["season"], st["display_week"])
     season = projections(st["season"], None)
     hot = trending("add")
@@ -626,8 +706,8 @@ def cmd_waivers(a):
     for pid, p in db.items():
         if pid in rostered or p["pos"] not in want or not p.get("team"):
             continue
-        wk = (proj.get(pid) or {}).get(key) or 0
-        ros = (season.get(pid) or {}).get(key) or 0
+        wk = score(proj.get(pid)) or 0
+        ros = score(season.get(pid)) or 0
         if wk <= 0 and pid not in hot:
             continue
         pool.append((wk + ros / 17.0 + min(hot.get(pid, 0), 50000) / 10000.0, pid, ros))
@@ -650,7 +730,7 @@ def cmd_waivers(a):
         extra = f" | season proj {ros:.0f}" if ros else ""
         if pid in hot:
             extra += f" | added in {hot[pid]:,} leagues (24h)"
-        print("- " + fmt_player(pid, db, proj, key, extra))
+        print("- " + fmt_player(pid, db, proj, score, extra))
 
 
 def cmd_trade(a):
@@ -659,6 +739,7 @@ def cmd_trade(a):
     db = players()
     b = league_bundle(cfg, a.league) if cfg.get("league_id") or a.league else None
     key = scoring_key(b["league"]) if b else "pts_ppr"
+    score = scorer(b["league"] if b else None)
     mine = set(b["mine"].get("players") or []) if b and b["mine"] else set()
     wk = projections(st["season"], st["display_week"])
     season = projections(st["season"], None)
@@ -668,13 +749,18 @@ def cmd_trade(a):
     def side(label, text, prefer):
         total_season = total_week = 0.0
         best = 0.0
+        unmatched = []
+        names = [x.strip() for x in text.split(",") if x.strip()]
+        if not names:
+            unmatched.append("(nothing named)")
         print(f"{label}:")
-        for q in [x.strip() for x in text.split(",") if x.strip()]:
+        for q in names:
             pid, alts = find_player(q, db, prefer)
             if not pid:
+                unmatched.append(q)
                 print(f"  ? '{q}': no confident match" + (f" - maybe {', '.join(alts)}" if alts else ""))
                 continue
-            sp = (season.get(pid) or {}).get(key) or 0
+            sp = score(season.get(pid)) or 0
             # Sleeper's season projections report gp=1.0 for every team defense,
             # which read as "98 points per game" and made a DST worth an elite RB.
             # A real full-season row reports 18; anything under half a season is
@@ -684,7 +770,7 @@ def cmd_trade(a):
             per_game = sp / gp
             total_season += per_game * weeks_left
             best = max(best, per_game)
-            total_week += (wk.get(pid) or {}).get(key) or 0
+            total_week += score(wk.get(pid)) or 0
             p = db[pid]
             e = injury_note(pid, db, inj)
             note = f" | ESPN: {e['status']} - {e['comment']}" if e else ""
@@ -692,11 +778,14 @@ def cmd_trade(a):
                   f"{per_game:.1f} proj/game, ~{per_game * weeks_left:.0f} pts rest of season"
                   f"{' [' + p['inj'] + ']' if p.get('inj') else ''}{note}")
         print(f"  TOTAL: ~{total_season:.0f} rest-of-season pts, {total_week:.1f} this week; best player {best:.1f}/game")
-        return total_season, best
+        return total_season, best, unmatched
 
     print(f"Trade check - {scoring_label(key)} - {weeks_left} regular-season weeks left (from season projections)")
-    give, give_best = side("YOU GIVE", a.give, mine)
-    get, get_best = side("YOU GET", a.get, None)
+    give, give_best, give_missing = side("YOU GIVE", a.give, mine)
+    get, get_best, get_missing = side("YOU GET", a.get, None)
+    if give_missing or get_missing:
+        die("cannot judge this trade: " + ", ".join(give_missing + get_missing)
+            + " did not resolve to a player. Ask which player is meant, then run it again.")
     diff = get - give
     print(f"Net rest-of-season projection: {'+' if diff >= 0 else ''}{diff:.0f} pts for you; "
           f"best player in the deal: {'you get' if get_best > give_best else 'you give'} the stronger one "
@@ -714,11 +803,12 @@ def cmd_player(a):
     cfg = load_config()
     b = league_bundle(cfg) if cfg.get("league_id") else None
     key = scoring_key(b["league"]) if b else "pts_ppr"
+    score = scorer(b["league"] if b else None)
     wk = projections(st["season"], st["display_week"])
     season = projections(st["season"], None)
     p = db[pid]
-    print(fmt_player(pid, db, wk, key, matchup_note(pid, db, wk, defense_ranks(st["season"], st["display_week"], db, key))))
-    sp = (season.get(pid) or {}).get(key)
+    print(fmt_player(pid, db, wk, score, matchup_note(pid, db, wk, defense_ranks(st["season"], st["display_week"], db, score))))
+    sp = score(season.get(pid))
     if sp:
         print(f"Season projection: {sp:.0f} {scoring_label(key)} pts")
     print(f"Age {p.get('age') or '?'}, {p.get('exp') if p.get('exp') is not None else '?'} years in the NFL")
@@ -757,11 +847,13 @@ def cmd_defense(a):
     db = players()
     b = league_bundle(cfg) if cfg.get("league_id") else None
     key = scoring_key(b["league"]) if b else "pts_ppr"
-    ranks = defense_ranks(st["season"], st["display_week"], db, key)
+    score = scorer(b["league"] if b else None)
+    ranks = defense_ranks(st["season"], st["display_week"], db, score)
     pos = a.pos.upper()
     rows = sorted(((r[0], t, r[1], r[2]) for (t, ps), r in ranks.items() if ps == pos))
     if not rows:
-        die("no completed games yet this season")
+        die(f"no points-allowed table for {pos} yet: week {st['display_week']} of the season, "
+            f"and defenses are ranked against QB/RB/WR/TE/K only")
     print(f"Points allowed to {pos}s per game ({scoring_label(key)}), weeks 1-{int(st['display_week']) - 1}. 1st = easiest matchup.")
     for rank, team, avg, n in rows[: a.limit]:
         print(f"{ordinal(rank)} {team}: {avg:.1f}/g ({n}g)")
@@ -779,7 +871,7 @@ def lock_issues(cfg: dict, hours: float) -> list[str]:
         return []
     st = nfl_state()
     week = st["display_week"]
-    db, key = players(), scoring_key(b["league"])
+    db, key, score = players(), scoring_key(b["league"]), scorer(b["league"])
     proj = projections(st["season"], week)
     games = kickoffs(week)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -830,9 +922,9 @@ def lock_issues(cfg: dict, hours: float) -> list[str]:
             continue
         allowed = SLOT_POSITIONS.get(slot, {slot})
         options = sorted((pp for pp in bench if pp not in used and (db.get(pp) or {}).get("pos") in allowed and playable(pp)),
-                         key=lambda pp: -((proj.get(pp) or {}).get(key) or 0))
+                         key=lambda pp: -(score(proj.get(pp)) or 0))
         if options:
-            swap = f"best swap: {db[options[0]]['name']} ({(proj.get(options[0]) or {}).get(key) or 0:.1f} proj)"
+            swap = f"best swap: {db[options[0]]['name']} ({score(proj.get(options[0])) or 0:.1f} proj)"
             # The move has to happen before EITHER game starts: a 4:25pm starter
             # swapped for a 1:00pm bench player is already too late at 2pm.
             swap_kick = (games.get(db[options[0]]["team"]) or {}).get("kickoff")
@@ -857,8 +949,8 @@ def cmd_lockcheck(a):
         print(r)
 
 
-def roster_injuries(cfg: dict) -> list[tuple[str, str, str, bool]]:
-    b = league_bundle(cfg)
+def roster_injuries(cfg: dict, league_id: str | None = None) -> list[tuple[str, str, str, bool]]:
+    b = league_bundle(cfg, league_id)
     if not b["mine"]:
         return []
     db = players()
@@ -873,7 +965,7 @@ def roster_injuries(cfg: dict) -> list[tuple[str, str, str, bool]]:
 
 def cmd_injuries(a):
     cfg = load_config()
-    rows = roster_injuries(cfg)
+    rows = roster_injuries(cfg, a.league)
     if not rows:
         print("No injury designations on your roster right now.")
         return
@@ -926,6 +1018,18 @@ def main(argv=None):
     s = sub.add_parser("lockcheck"); s.add_argument("--hours", type=float, default=3); s.set_defaults(fn=cmd_lockcheck)
     s = sub.add_parser("lockwatch"); s.add_argument("--hours", type=float, default=3); s.set_defaults(fn=cmd_lockwatch)
     a = ap.parse_args(argv)
+    if getattr(a, "limit", None) is not None:
+        a.limit = max(1, a.limit)
+    if getattr(a, "hours", None) is not None:
+        if a.hours != a.hours:  # NaN
+            die("--hours must be a number")
+        a.hours = min(max(a.hours, 0.0), 336.0)  # two weeks is every schedule there is
+    if getattr(a, "pos", None):
+        wanted = [x.strip().upper() for x in a.pos.split(",") if x.strip()]
+        unknown = [x for x in wanted if x not in POSITIONS]
+        if unknown:
+            die(f"unknown position(s): {', '.join(unknown)}. Tracked: {', '.join(POSITIONS)}")
+        a.pos = ",".join(wanted)
     a.fn(a)
 
 

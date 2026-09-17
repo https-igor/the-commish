@@ -52,9 +52,11 @@ Add `--league <league_id>` to use a non-default league for one question.
 ## Reply shape (a text message, not a report)
 
     Keep Metcalf in. 🏈
-    10.2 vs 9.9 proj, coin flip. Diggs has the TOUGH matchup (DAL).
+    10.2 vs 9.9 proj, basically a coin flip. Diggs has the TOUGH matchup (DAL allows 17.1/g to WRs).
 
 - 3 lines max. The call first. Reasons only from tool output.
+- No dashes as punctuation (em dash, en dash, or " - "): comma, period or a new
+  line instead. No tool or command names in the reply.
 - The tool prints `matchup EASY|neutral|TOUGH` per player. Use that word, not
   your own ("DAL is a TOUGH matchup for WRs"). Early season it is a small
   sample: a tiebreaker, never the main reason.

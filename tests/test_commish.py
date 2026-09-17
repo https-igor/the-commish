@@ -20,10 +20,15 @@ sys.modules["commish"] = commish
 spec.loader.exec_module(commish)
 
 
+PPR = commish_scorer = None  # set below, once the module is loaded
+
+
 def player(name, pos, team, inj=None, active=True, espn=None):
     return {"name": name, "pos": pos, "team": team, "inj": inj, "inj_part": None,
             "active": active, "age": 25, "exp": 3, "espn": espn}
 
+
+PPR = commish.scorer(None)   # Sleeper's own PPR column, the no-league default
 
 DB = {
     "1": player("Stefon Diggs", "WR", "WAS"),
@@ -104,6 +109,41 @@ class TestScoring(unittest.TestCase):
         self.assertEqual(commish.scoring_key(None), "pts_ppr")
 
 
+class TestLeagueScoring(unittest.TestCase):
+    """Sleeper's three precomputed columns cannot express half the leagues on the platform."""
+
+    PLAIN = {"scoring_settings": {"rec": 0.5, "pass_td": 4.0, "rec_td": 6.0, "rush_td": 6.0,
+                                  "fgm_20_29": 3.0, "fgm_30_39": 3.0}}
+    RICH = {"scoring_settings": {"rec": 0.5, "pass_td": 6.0, "rec_td": 6.0, "rush_td": 6.0,
+                                 "bonus_rec_te": 1.0, "rec_fd": 0.5, "rec_yd": 0.1, "pass_yd": 0.04}}
+
+    def test_a_kicker_table_is_not_a_custom_rule(self):
+        self.assertFalse(commish.custom_scoring(self.PLAIN))
+        self.assertFalse(commish.custom_scoring({}))
+        self.assertFalse(commish.custom_scoring(None))
+
+    def test_six_point_passing_tds_and_bonuses_are(self):
+        self.assertTrue(commish.custom_scoring(self.RICH))
+
+    def test_a_plain_league_uses_sleepers_own_column(self):
+        row = {"stats": {"pts_half_ppr": 12.3, "pts_ppr": 15.0, "rec": 6}}
+        self.assertEqual(commish.scorer(self.PLAIN)(row), 12.3)
+
+    def test_a_rich_league_is_scored_on_its_own_settings(self):
+        """Sleeper projects the bonus stats themselves, so the settings multiply the line as it comes."""
+        row = {"stats": {"pts_half_ppr": 8.8, "rec": 6.0, "rec_yd": 60.0, "rec_fd": 4.0}}
+        # 6 catches x 0.5 + 60 yards x 0.1 + 4 first downs x 0.5 = 11.0, not the 8.8 bucket
+        self.assertAlmostEqual(commish.scorer(self.RICH)(row), 11.0)
+
+    def test_the_te_premium_reaches_a_tight_end(self):
+        te = {"stats": {"rec": 6.0, "rec_yd": 60.0, "rec_fd": 4.0, "bonus_rec_te": 6.0}}
+        self.assertAlmostEqual(commish.scorer(self.RICH)(te), 17.0)
+
+    def test_the_label_says_when_it_is_not_plain(self):
+        self.assertEqual(commish.scoring_label("pts_half_ppr", self.PLAIN), "Half-PPR")
+        self.assertIn("own settings", commish.scoring_label("pts_half_ppr", self.RICH))
+
+
 class TestDefenseRanks(unittest.TestCase):
     def setUp(self):
         self.weeks = {
@@ -127,7 +167,7 @@ class TestDefenseRanks(unittest.TestCase):
 
     def test_points_allowed_are_per_game_not_per_player(self):
         """NE gave up 30 to WRs in week 1 (two players) and 30 in week 2: 30/game, not 20."""
-        ranks = commish.defense_ranks("2026", 3, DB, "pts_ppr")
+        ranks = commish.defense_ranks("2026", 3, DB, PPR)
         rank, average, games, total = ranks[("NE", "WR")]
         self.assertAlmostEqual(average, 30.0)
         self.assertEqual(games, 2)
@@ -136,17 +176,17 @@ class TestDefenseRanks(unittest.TestCase):
 
     def test_week_one_has_no_completed_games(self):
         """range(1, 1) is empty, and an empty ranking must not crash a lineup answer."""
-        self.assertEqual(commish.defense_ranks("2026", 1, DB, "pts_ppr"), {})
+        self.assertEqual(commish.defense_ranks("2026", 1, DB, PPR), {})
         self.assertEqual(self.calls, [])
 
     def test_matchup_note_labels_the_extremes(self):
-        ranks = commish.defense_ranks("2026", 3, DB, "pts_ppr")
-        note = commish.matchup_note("1", DB, {"1": {"opp": "NE"}}, ranks)
+        ranks = commish.defense_ranks("2026", 3, DB, PPR)
+        note = commish.matchup_note("1", DB, {"1": {"stats": {}, "opp": "NE"}}, ranks)
         self.assertIn("matchup EASY", note)
         self.assertIn("NE allows 30.0/g to WRs", note)
 
     def test_matchup_note_is_empty_without_data(self):
-        self.assertEqual(commish.matchup_note("1", DB, {"1": {"opp": "SEA"}}, {}), "")
+        self.assertEqual(commish.matchup_note("1", DB, {"1": {"stats": {}, "opp": "SEA"}}, {}), "")
 
 
 class TestInjuryNames(unittest.TestCase):
@@ -181,9 +221,9 @@ class TestLockIssues(unittest.TestCase):
             "rosters": [], "names": {},
             "mine": {"roster_id": 1, "starters": ["2", "5", "3"], "players": ["2", "5", "3", "1", "4"], "reserve": []},
         }
-        self.proj = {"1": {"pts_ppr": 9.9, "opp": "DAL"}, "2": {"pts_ppr": None, "opp": None},
-                     "3": {"pts_ppr": 8.0, "opp": "JAX"}, "4": {"pts_ppr": 9.0, "opp": "SF"},
-                     "5": {"pts_ppr": 24.2, "opp": "BUF"}}
+        self.proj = {"1": {"stats": {"pts_ppr": 9.9}, "opp": "DAL"}, "2": {"stats": {}, "opp": None},
+                     "3": {"stats": {"pts_ppr": 8.0}, "opp": "JAX"}, "4": {"stats": {"pts_ppr": 9.0}, "opp": "SF"},
+                     "5": {"stats": {"pts_ppr": 24.2}, "opp": "BUF"}}
         self.saved = (commish.league_bundle, commish.nfl_state, commish.players,
                       commish.projections, commish.kickoffs, datetime.datetime)
         commish.league_bundle = lambda cfg, league_id=None: self.bundle

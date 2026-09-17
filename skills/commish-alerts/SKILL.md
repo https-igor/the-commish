@@ -15,8 +15,8 @@ Registered by `scripts/register_alerts.py` (create-if-missing, safe to re-run):
 | `commish-tuesday-waivers` | Tue 22:00 (6pm ET) | waiver targets before claims run |
 
 Every run's final reply is texted to the owner, so **the final reply IS the
-text**: 3 lines max, no preamble, no mention of crons or tools, reasons only
-from tool output.
+text**: 3 lines max, no preamble, no mention of crons, tools or command names,
+reasons only from tool output, and no dashes as punctuation.
 
 ## commish-lock-reminder (last-minute)
 

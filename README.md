@@ -19,8 +19,10 @@ Text it like a friend who knows the injury report before kickoff:
 - **Alerts**: injury changes on your roster, Sunday-morning lineup check, Tuesday waiver targets
 - **Short answers**: texts, not essays, and every reason comes from the data
 
-Data: [Sleeper API](https://docs.sleeper.com/) (league, rosters, projections, trending adds) and the
-ESPN injury report. No API keys. ESPN/Yahoo leagues work in manual mode (tell it your players).
+Data: [Sleeper API](https://docs.sleeper.com/) (league, rosters, projections, weekly stats, trending
+adds) and ESPN (injury report, player news, kickoff times). No API keys. Leagues whose scoring the
+PPR/half/standard columns cannot express (six-point passing TDs, TE premium, first-down points) are
+scored against their own settings. ESPN/Yahoo leagues work in manual mode (tell it your players).
 
 ## Layout
 
