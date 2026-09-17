@@ -38,7 +38,7 @@ and name their biggest weekly edge. This is what makes them keep texting you.
 
 ## 5. Alerts
 
-Offer the alerts in one short text and register them when they say yes:
+Offer the alerts in one short text and register them when they say yes (five jobs, one command):
 
 - ⏰ last-minute lineup reminders (a starter is out/questionable/on bye and his game locks within 3h)
 - ⚠️ injury alerts for their roster (only texts on a change)

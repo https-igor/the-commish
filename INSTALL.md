@@ -38,7 +38,7 @@ under your profile — not your email). It finds your leagues, and if you are in
 several it asks which one. Then it reads your roster and texts you the first
 thing worth fixing.
 
-Say yes when it offers alerts, and it registers three scheduled texts:
+Say yes when it offers alerts, and it registers these scheduled texts:
 
 | Alert | When |
 | --- | --- |
