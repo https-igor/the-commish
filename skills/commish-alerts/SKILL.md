@@ -13,6 +13,7 @@ Registered by `scripts/register_alerts.py` (create-if-missing, safe to re-run):
 | `commish-injury-watch` | every 30 min | runs only when `commish.py monitor` output changes |
 | `commish-sunday-lineup` | Sun 15:00 (11am ET) | lineup check before the early games |
 | `commish-tuesday-waivers` | Tue 22:00 (6pm ET) | waiver targets before claims run |
+| `commish-weekly-recap` | Tue 13:00 (9am ET) | last week's result, after Monday night |
 
 Every run's final reply is texted to the owner, so **the final reply IS the
 text**: 3 lines max, no preamble, no mention of crons, tools or command names,
@@ -53,6 +54,19 @@ Run `commish.py team` and `commish.py injuries`. If something needs action
 (empty slot, starter not expected to play, a clearly better bench option), text
 the exact moves. Otherwise one line: `🏈 Lineup's set. Projected <total>.` plus
 the opponent's projection from `commish.py matchup`.
+
+## commish-weekly-recap
+
+Run `commish.py recap` and `commish.py standings`. Three lines, in this order:
+the result, the one costliest bench miss, where they stand.
+
+    Won 112.4 to 98.1 🏈
+    Diggs went off for 22.6 on your bench, that was the week's one miss.
+    3rd at 2-1, second-most points in the league.
+
+Nothing to brag about and nothing missed? Two lines is a finished text. Never
+list every player. If `recap` says there is no completed week yet, say nothing
+useful happened and stop.
 
 ## commish-tuesday-waivers
 

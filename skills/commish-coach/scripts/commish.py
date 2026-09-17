@@ -25,6 +25,9 @@ linked Sleeper account and caches. Nothing here writes outside it.
     commish.py news "<name>"                latest ESPN fantasy news for a player
     commish.py defense [--pos WR]           which defenses give up the most points, by position
     commish.py lockcheck [--hours 3]        starters with a problem whose game has not locked yet
+    commish.py standings                    the league table, and who is scoring
+    commish.py recap [--week N]             last week: the result, and the points left on the bench
+    commish.py moves [--week N]             what every team added, dropped and traded
     commish.py monitor                      stable snapshot for the alert cron
 """
 from __future__ import annotations
@@ -949,6 +952,132 @@ def cmd_lockcheck(a):
         print(r)
 
 
+def week_points(b: dict, week: int) -> tuple[dict, dict]:
+    """(roster_id -> {'points','starters','players_points','matchup_id'}, roster_id -> team name) for one week."""
+    rows = fetch(f"{SLEEPER}/league/{b['league']['league_id']}/matchups/{week}") or []
+    owner_of = {r["roster_id"]: r.get("owner_id") for r in b["rosters"]}
+    return ({m["roster_id"]: m for m in rows},
+            {rid: b["names"].get(owner, f"roster {rid}") for rid, owner in owner_of.items()})
+
+
+def best_lineup(slots: list[str], players_points: dict, db: dict) -> tuple[float, list[tuple[str, str]]]:
+    """The highest-scoring legal lineup from everything on the roster, and what it was.
+
+    Restrictive slots are filled first and flex slots last, each with the best
+    player still available: filling FLEX first would spend a player a fixed slot
+    then has to do without.
+    """
+    taken, picks, total = set(), [], 0.0
+    order = sorted(range(len(slots)), key=lambda i: len(SLOT_POSITIONS.get(slots[i], {slots[i]})))
+    for i in order:
+        allowed = SLOT_POSITIONS.get(slots[i], {slots[i]})
+        options = [(pts, pid) for pid, pts in players_points.items()
+                   if pid not in taken and (db.get(pid) or {}).get("pos") in allowed]
+        if not options:
+            continue
+        pts, pid = max(options)
+        taken.add(pid)
+        total += pts
+        picks.append((slots[i], pid))
+    return total, picks
+
+
+def cmd_standings(a):
+    cfg = load_config()
+    b = league_bundle(cfg, a.league)
+    mine = b["mine"]
+    rows = []
+    for r in b["rosters"]:
+        st = r.get("settings") or {}
+        pf = st.get("fpts", 0) + (st.get("fpts_decimal", 0) or 0) / 100
+        pa = st.get("fpts_against", 0) + (st.get("fpts_against_decimal", 0) or 0) / 100
+        possible = st.get("ppts", 0) + (st.get("ppts_decimal", 0) or 0) / 100
+        rows.append((st.get("wins", 0), pf, r["roster_id"], st.get("losses", 0), st.get("ties", 0), pa, possible,
+                     b["names"].get(r.get("owner_id"), f"roster {r['roster_id']}")))
+    rows.sort(reverse=True)
+    print(f"{b['league']['name']} standings")
+    for i, (wins, pf, rid, losses, ties, pa, possible, name) in enumerate(rows, 1):
+        you = "  <- YOU" if mine and rid == mine["roster_id"] else ""
+        efficiency = f", started {pf / possible * 100:.0f}% of what the roster could score" if possible else ""
+        print(f"{i}. {name} {wins}-{losses}{'-' + str(ties) if ties else ''} | "
+              f"points for {pf:.1f}, against {pa:.1f}{efficiency}{you}")
+
+
+def cmd_recap(a):
+    cfg = load_config()
+    b = league_bundle(cfg, a.league)
+    mine = require_mine(b)
+    st = nfl_state()
+    week = a.week or (int(st["display_week"]) - 1)
+    if week < 1:
+        die("no completed week yet this season")
+    db, key, score = players(), scoring_key(b["league"]), scorer(b["league"])
+    weeks, names = week_points(b, week)
+    me = weeks.get(mine["roster_id"])
+    if not me:
+        die(f"no week {week} matchup for this team")
+    played = me.get("players_points") or {}
+    starters = [p for p in me.get("starters") or [] if p and p != "0"]
+    opp = None
+    if me.get("matchup_id") is not None:
+        opp = next((m for m in weeks.values()
+                    if m.get("matchup_id") == me.get("matchup_id") and m["roster_id"] != me["roster_id"]), None)
+    mine_points = me.get("points") or 0.0
+    print(f"Week {week} recap - {b['league']['name']}")
+    if opp:
+        verdict = "WON" if mine_points > (opp.get("points") or 0) else ("LOST" if mine_points < (opp.get("points") or 0) else "TIED")
+        print(f"You {verdict} {mine_points:.1f} to {opp.get('points') or 0:.1f} against "
+              f"{names.get(opp['roster_id'], 'them')}")
+    else:
+        print(f"You scored {mine_points:.1f} (no opponent this week)")
+    slots = [x for x in b["league"].get("roster_positions") or [] if x not in ("BN", "IR", "TAXI")]
+    best, picks = best_lineup(slots, played, db)
+    left = best - mine_points
+    print(f"Best possible lineup: {best:.1f} ({left:.1f} points left on your bench)")
+    # Each miss is one swap: the best player left out, against the worst starter
+    # he could have replaced. Pairing every miss with the same low scorer read
+    # as three separate mistakes when it was one lineup.
+    started = set(starters)
+    optimal = {pid for _, pid in picks}
+    missed = sorted(((played.get(pid, 0), pid, slot) for slot, pid in picks if pid not in started), reverse=True)
+    spare = sorted((played.get(p, 0), p) for p in starters if p not in optimal)
+    for (points, pid, slot), (was_points, was_pid) in zip(missed, spare):
+        print(f"  {slot}: {(db.get(pid) or {}).get('name', pid)} scored {points:.1f} on your bench, "
+              f"you started {(db.get(was_pid) or {}).get('name', was_pid)} for {was_points:.1f}")
+    ranked = sorted(((played.get(p, 0), p) for p in starters), reverse=True)
+    if ranked:
+        print(f"Best starter: {(db.get(ranked[0][1]) or {}).get('name', ranked[0][1])} {ranked[0][0]:.1f}")
+        print(f"Worst starter: {(db.get(ranked[-1][1]) or {}).get('name', ranked[-1][1])} {ranked[-1][0]:.1f}")
+    scores = sorted(((m.get("points") or 0, names.get(rid, rid)) for rid, m in weeks.items()), reverse=True)
+    if scores:
+        print(f"League high: {scores[0][1]} {scores[0][0]:.1f}; league low: {scores[-1][1]} {scores[-1][0]:.1f}")
+
+
+def cmd_moves(a):
+    cfg = load_config()
+    b = league_bundle(cfg, a.league)
+    st = nfl_state()
+    week = a.week or int(st["display_week"])
+    db = players()
+    rows = fetch(f"{SLEEPER}/league/{b['league']['league_id']}/transactions/{week}") or []
+    owner_of = {r["roster_id"]: b["names"].get(r.get("owner_id"), f"roster {r['roster_id']}") for r in b["rosters"]}
+    mine = b["mine"]["roster_id"] if b["mine"] else None
+    done = [t for t in rows if t.get("status") == "complete"]
+    print(f"Week {week} moves in {b['league']['name']}: {len(done)} completed")
+    for t in done:
+        who = ", ".join(owner_of.get(rid, str(rid)) for rid in t.get("roster_ids") or [])
+        tag = " (YOU)" if mine in (t.get("roster_ids") or []) else ""
+        bid = (t.get("settings") or {}).get("waiver_bid")
+        parts = []
+        for pid, rid in (t.get("adds") or {}).items():
+            parts.append(f"{owner_of.get(rid, rid)} added {(db.get(pid) or {}).get('name', pid)}")
+        for pid, rid in (t.get("drops") or {}).items():
+            parts.append(f"{owner_of.get(rid, rid)} dropped {(db.get(pid) or {}).get('name', pid)}")
+        print(f"- {t['type']}{tag}: {'; '.join(parts) or who}" + (f" (${bid} FAAB)" if bid else ""))
+    if not done:
+        print("Nothing completed yet this week.")
+
+
 def roster_injuries(cfg: dict, league_id: str | None = None) -> list[tuple[str, str, str, bool]]:
     b = league_bundle(cfg, league_id)
     if not b["mine"]:
@@ -1011,6 +1140,9 @@ def main(argv=None):
     s.add_argument("--league"); s.set_defaults(fn=cmd_trade)
     s = sub.add_parser("player"); s.add_argument("name"); s.set_defaults(fn=cmd_player)
     sub.add_parser("monitor").set_defaults(fn=cmd_monitor)
+    s = sub.add_parser("standings"); s.add_argument("--league"); s.set_defaults(fn=cmd_standings)
+    s = sub.add_parser("recap"); s.add_argument("--week", type=int); s.add_argument("--league"); s.set_defaults(fn=cmd_recap)
+    s = sub.add_parser("moves"); s.add_argument("--week", type=int); s.add_argument("--league"); s.set_defaults(fn=cmd_moves)
     s = sub.add_parser("mode"); s.add_argument("mode"); s.set_defaults(fn=cmd_mode)
     s = sub.add_parser("news"); s.add_argument("name"); s.add_argument("--limit", type=int, default=3); s.set_defaults(fn=cmd_news)
     s = sub.add_parser("defense"); s.add_argument("--pos", default="WR"); s.add_argument("--limit", type=int, default=8)

@@ -44,6 +44,7 @@ Say yes when it offers alerts, and it registers three scheduled texts:
 | --- | --- |
 | ⏰ last-minute lineup fix | a starter is Out/Questionable/on bye and his game kicks off within 3h |
 | ⚠️ injury change on your roster | checked every 30 min, texts only when a designation changes |
+| 📊 weekly recap | Tuesday 9am ET, after Monday night football |
 | 🔥 waiver targets | Tuesday 6pm ET, before claims process |
 | 🏈 lineup check | Sunday 11am ET |
 
@@ -57,6 +58,8 @@ who should I start at flex?          anything I need to fix?
 Diggs or Metcalf?                    who should I pick up this week?
 is this trade fair: my Gibbs for his Bijan + Bigsby?
 any news on Ja'Marr Chase?           which defenses are worst against WRs?
+how did I do last week?              where am I in the standings?
+what did everyone pick up?
 ```
 
 ## Keeping it running

@@ -203,6 +203,26 @@ class TestInjuryNames(unittest.TestCase):
         self.assertEqual(commish.injury_note("1", db, feed)["comment"], "only one of him")
 
 
+class TestBestLineup(unittest.TestCase):
+    """The optimal lineup is what 'points left on your bench' is measured against."""
+
+    def test_a_fixed_slot_is_filled_before_the_flex(self):
+        """Filling FLEX first would spend the only WR and leave the WR slot empty."""
+        points = {"1": 20.0, "4": 12.0, "5": 18.0, "3": 9.0}   # Diggs WR, Washington WR, Gibbs RB, Harvey RB
+        total, picks = commish.best_lineup(["WR", "RB", "FLEX"], points, DB)
+        self.assertAlmostEqual(total, 50.0)
+        self.assertEqual(dict((slot, pid) for slot, pid in picks)["WR"], "1")
+        self.assertEqual(dict((slot, pid) for slot, pid in picks)["RB"], "5")
+
+    def test_nobody_is_started_twice(self):
+        total, picks = commish.best_lineup(["WR", "FLEX"], {"1": 20.0}, DB)
+        self.assertAlmostEqual(total, 20.0)
+        self.assertEqual(len(picks), 1)
+
+    def test_an_empty_roster_scores_nothing(self):
+        self.assertEqual(commish.best_lineup(["WR", "RB"], {}, DB), (0.0, []))
+
+
 class TestLockIssues(unittest.TestCase):
     """The last-minute reminder: what it flags, what it stays quiet about, and the swap it offers."""
 

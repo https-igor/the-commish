@@ -16,7 +16,10 @@ Text it like a friend who knows the injury report before kickoff:
 - **Trade verdicts**: Accept / Decline / Counter
 - **Last-minute reminders**: a starter is out / questionable / on bye and his game locks within 3 hours, with the exact swap
 - **Matchups & news**: defense-vs-position ranks from this season's stats, latest ESPN fantasy news
-- **Alerts**: injury changes on your roster, Sunday-morning lineup check, Tuesday waiver targets
+- **Monday recap**: the result, the points you left on your bench, where you stand
+- **League table**: records, points for and against, and what share of its possible points each team started
+- **League moves**: what every rival added, dropped or traded, with the FAAB they spent
+- **Alerts**: injury changes on your roster, Sunday-morning lineup check, Tuesday recap and waiver targets
 - **Short answers**: texts, not essays, and every reason comes from the data
 
 Data: [Sleeper API](https://docs.sleeper.com/) (league, rosters, projections, weekly stats, trending

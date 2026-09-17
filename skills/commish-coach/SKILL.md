@@ -21,6 +21,9 @@ Tool (always this absolute path, run as yourself):
 | "which defenses are bad vs WRs", streaming a position | `$T defense --pos WR` |
 | "anything I need to fix before games start" | `$T lockcheck --hours 24` |
 | "any injuries" | `$T injuries` |
+| "how did I do", "did I win", recap of last week | `$T recap` (add `--week N` for an older week) |
+| "standings", "am I making the playoffs", "who's the best team" | `$T standings` |
+| "what did everyone pick up", "did anyone drop X", league gossip | `$T moves` |
 | which league / NFL week / reply mode | `$T status`; switch league with `$T use <league_id>` |
 | "I'm new to this", "what does FLEX mean" | `$T mode beginner` (back: `$T mode pro`) |
 
@@ -67,6 +70,17 @@ Add `--league <league_id>` to use a non-default league for one question.
 - `OUT X → IN Y` only when the lineup must change: X is a current STARTER and
   Y is on the BENCH (check `$T team`). If the pick already starts, say
   "Keep X in" instead.
+
+## Recaps and the league table
+
+- `recap` prints the result, the best lineup that roster could have started, and
+  the exact swaps that were missed. Lead with the result, then ONE swap, the
+  costliest: "You lost 93.9 to 130.8. Diggs scored 13.5 on your bench."
+- Points left on the bench is a fact, not a scolding. One line, no lecture.
+- `standings` includes what share of its possible points each team started.
+  Use it as the league's best insult material and the owner's own reality check.
+- `moves` is the league's gossip feed. Only mention a move that touches the
+  owner: a player they need, a handcuff to their starter, or a rival's upgrade.
 
 ## Rules
 

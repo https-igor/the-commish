@@ -37,6 +37,12 @@ JOBS = [
                   "(commish-sunday-lineup) and reply with the text for the owner.",
     },
     {
+        "name": "commish-weekly-recap",
+        "schedule": "0 13 * * 2",
+        "prompt": "Weekly recap, the morning after Monday night football. Follow the commish-alerts skill "
+                  "(commish-weekly-recap) and reply with the text for the owner.",
+    },
+    {
         "name": "commish-tuesday-waivers",
         "schedule": "0 22 * * 2",
         "prompt": "Tuesday waiver targets. Follow the commish-alerts skill (commish-tuesday-waivers) "
