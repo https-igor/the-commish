@@ -1,0 +1,16 @@
+services:
+  agent:
+    build: .
+    env_file:
+      - path: ./plow-credentials
+        required: false
+    environment:
+      # Registered Agent Index ID: https://aiworthusing.com/agent-index/the-commish
+      AGENT_ID: the-commish
+    volumes:
+      - agent-home:/var/lib/hermes
+    # The agent checkpoints on SIGTERM; its supervisor allows 30s.
+    stop_grace_period: 35s
+
+volumes:
+  agent-home:
