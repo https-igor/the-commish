@@ -88,5 +88,5 @@ The agent runs on your machine. It holds your Plow credential and your linked
 Sleeper **username** (public data) — nothing else about you. Usage reporting
 sends daily token counts per model to the [Agent
 Index](https://aiworthusing.com/agent-index/the-commish) and nothing else: no
-messages, no roster, no league. Build the image without the `agent-index`
-service in the Dockerfile to leave it out.
+messages, no roster, no league. The reporter is the Plow base image's own;
+set `AGENT_ID` empty in compose.yml to leave it out.
