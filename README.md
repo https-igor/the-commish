@@ -34,8 +34,6 @@ runtime/persona.md          who The Commish is
 skills/commish-coach/       the brain + scripts/commish.py (all data access)
 skills/commish-setup/       onboarding: link Sleeper, first win, alerts
 skills/commish-alerts/      scheduled texts + register_alerts.py
-image/s6-overlay/           Agent Index usage reporter (s6 longrun)
-vendor/client.pin           pinned Agent Index client
 tests/                      the contract, stubbed feeds, no network
 ```
 
